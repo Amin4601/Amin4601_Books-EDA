@@ -5,7 +5,6 @@ on:
 
 permissions:
   contents: write
-  workflows: write
 
 jobs:
   import:
@@ -24,6 +23,7 @@ jobs:
           curl -fsSL https://codeload.github.com/ranjithbrs/books-data-analysis/tar.gz/refs/heads/main \
             | tar -xz --strip-components=1 -C /tmp/books-eda
           cp -a /tmp/books-eda/. .
+          rm -rf .github
           cat >> README.md <<'EOF'
 
           ---
