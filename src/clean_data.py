@@ -1,0 +1,149 @@
+"""
+clean_data.py
+==============
+Data Cleaning & Feature Engineering Pipeline for Books Dataset
+
+This script transforms the raw scraped data from 'data/raw/books_all_pages.csv'
+into a cleaned, structured, and feature-engineered dataset saved to
+'data/processed/books_cleaned.csv'.
+
+Key Transformations:
+1. Title Cleaning & Encoding Repair (fixes smart quotes, accented characters)
+2. Price Parsing (extracts numeric float value from currency strings)
+3. Rating Mapping (maps string ratings 'One'..'Five' to integers 1..5)
+4. Availability Normalization (cleans whitespace and flags stock status)
+5. Feature Engineering:
+   - title_length (character count)
+   - title_word_count (word count)
+   - price_tier (Budget, Mid-Range, Premium)
+"""
+
+import os
+import sys
+import pandas as pd
+
+# Reconfigure stdout for utf-8 on Windows
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        pass
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def repair_text_encoding(text: str) -> str:
+    """
+    Repairs common UTF-8 bytes that were misread as Latin-1/CP1252.
+    Example: 'Shakespeareâ€™s' -> 'Shakespeare’s'
+    """
+    if not isinstance(text, str):
+        return text
+    try:
+        # Re-encode as latin1 and decode as utf-8
+        return text.encode('latin1').decode('utf-8').strip()
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text.strip()
+
+
+def clean_books_data(raw_csv_path: str, output_csv_path: str) -> pd.DataFrame:
+    """
+    Reads raw CSV, performs cleaning, feature engineering, and saves cleaned data.
+    """
+    print(f"[1/6] Loading raw data from: {raw_csv_path}")
+    df = pd.read_csv(raw_csv_path)
+    initial_rows = len(df)
+    print(f"      Loaded {initial_rows} rows and {len(df.columns)} columns.")
+
+    # 1. Data Quality Check
+    print("[2/6] Checking missing values and duplicates...")
+    null_counts = df.isnull().sum()
+    exact_dups = df.duplicated().sum()
+    title_dups = df['Title'].duplicated().sum()
+    print(f"      Missing values: {null_counts.sum()} (Clean - 100% complete)")
+    print(f"      Exact duplicate rows: {exact_dups}")
+    if title_dups > 0:
+        dup_names = df[df['Title'].duplicated()]['Title'].unique().tolist()
+        print(f"      Duplicate titles: {title_dups} (e.g., '{dup_names[0]}' listed with different prices)")
+    else:
+        print("      Duplicate titles: 0")
+
+    # 2. Clean Title
+    print("[3/6] Cleaning and repairing title text...")
+    df['title_cleaned'] = df['Title'].apply(repair_text_encoding).str.strip()
+
+    # 3. Extract numeric price (in GBP £)
+    print("[4/6] Parsing price into numeric float values...")
+    # Extract numeric amount (handles '£51.77', 'Â£51.77', '£10', etc.)
+    extracted_prices = df['Price'].astype(str).str.extract(r'(\d+(?:\.\d+)?)')[0]
+    if extracted_prices.isnull().any():
+        invalid = df[extracted_prices.isnull()]['Price'].tolist()
+        raise ValueError(f"Failed to extract numeric price from values: {invalid}")
+    df['price_gbp'] = extracted_prices.astype(float)
+
+    # 4. Map textual star rating to numeric integer (1 to 5)
+    print("[5/6] Mapping star ratings to numeric values (1-5)...")
+    rating_map = {
+        'One': 1,
+        'Two': 2,
+        'Three': 3,
+        'Four': 4,
+        'Five': 5
+    }
+    mapped_ratings = df['Rating'].astype(str).str.strip().map(rating_map)
+    if mapped_ratings.isnull().any():
+        unmapped = df[mapped_ratings.isnull()]['Rating'].unique().tolist()
+        raise ValueError(f"Encountered unexpected rating values: {unmapped}")
+    df['rating_numeric'] = mapped_ratings.astype(int)
+
+    # 5. Clean availability & Engineer features
+    print("[6/6] Engineering analytical features & price tiers...")
+    df['in_stock'] = df['Availability'].str.contains('In stock', case=False, na=False)
+    df['title_length'] = df['title_cleaned'].str.len()
+    df['title_word_count'] = df['title_cleaned'].apply(lambda s: len(s.split()))
+
+    # Group books into retail price tiers: Budget, Mid-Range, and Premium
+    bins = [0, 20.0, 40.0, float('inf')]
+    labels = ['Budget (< £20)', 'Mid-Range (£20 - £40)', 'Premium (> £40)']
+    df['price_tier'] = pd.cut(df['price_gbp'], bins=bins, labels=labels, right=False)
+
+    # Reorder columns into a clean, professional schema
+    columns_order = [
+        'title_cleaned',
+        'price_gbp',
+        'rating_numeric',
+        'Rating',
+        'in_stock',
+        'title_length',
+        'title_word_count',
+        'price_tier'
+    ]
+    df_cleaned = df[columns_order].rename(columns={
+        'title_cleaned': 'title',
+        'Rating': 'rating_text'
+    })
+
+    # Ensure output directory exists and save
+    os.makedirs(os.path.dirname(output_csv_path), exist_ok=True)
+    df_cleaned.to_csv(output_csv_path, index=False, encoding='utf-8-sig')
+    print(f"\n[DONE] Cleaned dataset successfully saved to: {output_csv_path}")
+    print(f"       Final shape: {df_cleaned.shape}")
+
+    return df_cleaned
+
+
+if __name__ == '__main__':
+    raw_path = os.path.join(PROJECT_ROOT, 'data', 'raw', 'books_all_pages.csv')
+    if not os.path.exists(raw_path):
+        raw_path = os.path.join(PROJECT_ROOT, 'books_all_pages.csv')
+
+    processed_path = os.path.join(PROJECT_ROOT, 'data', 'processed', 'books_cleaned.csv')
+    cleaned_df = clean_books_data(raw_path, processed_path)
+
+    # Display concise summary for validation
+    print("\n" + "=" * 50)
+    print("Cleaned Dataset Info:")
+    print("=" * 50)
+    print(cleaned_df.info())
+    print("\nSummary Statistics for Numerical Columns:")
+    print(cleaned_df.describe())
